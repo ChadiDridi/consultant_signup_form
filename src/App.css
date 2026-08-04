@@ -1,0 +1,25 @@
+.custom-datepicker-wrapper {
+    width: 100%;
+}
+
+.custom-datepicker-input {
+    width: 100%;
+    height: 52px;
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 14px;
+    font-family: Alexandria, sans-serif;
+    text-align: right;
+    direction: ltr;
+    padding: 0 12px;
+}
+
+.react-datepicker {
+    font-family: Alexandria, sans-serif;
+    border-radius: 12px;
+}
+
+.react-datepicker__triangle {
+    display: none;
+}
