@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -13,6 +13,7 @@ import './App.css';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LINKEDIN_RE = /^https?:\/\/([\w-]+\.)*linkedin\.com\/in\/.+/i;
 const ARABIC_TEXT_RE = /^[؀-ۿ\s]+$/; // lettres arabes + espaces uniquement
+const ENGLISH_TEXT_RE = /^[A-Za-z\s]+$/;
 const MAX_FILE_MB = 2;
 const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 
@@ -35,99 +36,405 @@ function useIsMobile() {
   return mobile;
 }
 
-/* Literal Arabic strings (inlined from ar.json auth.register.*) — single-locale app. */
+/* Literal Arabic strings (inlined from ar.json auth.register.*) — kept as the underlying
+   submitted VALUES regardless of UI language. Display labels are translated separately
+   via OPTION_LABELS below; these constants are only used for form state / API payload /
+   "Other" special-case comparisons. */
 const CITY_OTHER = 'أخرى';
 const PROP_OTHER = 'أخرى';
 const REGION_OTHER = 'أخرى';
 
-/* react-hook-form schema — Step 1 (personal info). Reprend les règles de validation existantes. */
-const step1Schema = z
-  .object({
-    s1Name: z
+/* ── i18n: lightweight inline dictionary (no i18n library) ── */
+type Lang = 'ar' | 'en';
+const LANG_STORAGE_KEY = 'consultant-register-lang';
+
+const STRINGS = {
+  ar: {
+    common: {
+      required: '*',
+      langToggleLabel: 'English',
+    },
+    errors: {
+      s1NameRequired: 'الاسم الكامل مطلوب',
+      s1NameArabicOnly: 'الاسم يجب أن يحتوي على حروف عربية ومسافات فقط',
+      s1NameTriple: 'يرجى إدخال الاسم الثلاثي (ثلاث كلمات على الأقل)',
+      s1MobileRequired: 'رقم الجوال مطلوب',
+      s1MobileInvalid: 'رقم الجوال غير صحيح. مثال: 05XXXXXXXX أو 5XXXXXXXX',
+      s1EmailRequired: 'البريد الإلكتروني مطلوب',
+      s1EmailInvalid: 'صيغة البريد الإلكتروني غير صحيحة',
+      s1CityRequired: 'مدينة الإقامة مطلوبة',
+      s1CityOtherRequired: 'يرجى إدخال اسم المدينة',
+      s1CityOtherArabicOnly: 'اسم المدينة يجب أن يحتوي على حروف عربية فقط',
+      s1CityOtherTooShort: 'اسم المدينة قصير جداً',
+      s2LicenseRequired: 'رقم رخصة فال مطلوب',
+      s2LicenseInvalid: 'رقم الرخصة يجب أن يتكون من 10 أرقام',
+      s2ExpiryRequired: 'تاريخ انتهاء الرخصة مطلوب',
+      s2ExpiryFormat: 'الصيغة غير صحيحة (يوم/شهر/سنة)',
+      s2ExpiryInvalidDate: 'تاريخ غير صحيح',
+      s2ExpiryMustBeFuture: 'يجب أن يكون تاريخ الانتهاء في المستقبل',
+      s2FileRequired: 'صورة الرخصة مطلوبة',
+      s2FileFormat: 'صيغة الملف غير مدعومة (JPG, PNG أو PDF فقط)',
+      s2FileTooBig: (mb: number) => `حجم الملف يجب ألا يتجاوز ${mb} ميجابايت`,
+      s3PropsRequired: 'اختر نوع عقار واحد على الأقل',
+      s3PropOtherRequired: 'يرجى تحديد نوع العقار الآخر',
+      s3PropOtherArabicOnly: 'يجب أن يحتوي على حروف عربية فقط',
+      s3PropOtherTooShort: 'القيمة قصيرة جداً',
+      s3RegionsRequired: 'اختر منطقة تغطية واحدة على الأقل',
+      s3YearsRequired: 'سنوات الخبرة مطلوبة',
+      s3HasReportsRequired: 'هذا الحقل مطلوب',
+      s4DaysRequired: 'اختر يوماً واحداً على الأقل',
+      s4MonthsRequired: 'اختر شهراً واحداً على الأقل',
+      s4BioTooLong: 'النبذة يجب ألا تتجاوز 500 حرف',
+      s4LinkedinInvalid: 'رابط LinkedIn غير صحيح (مثال: https://linkedin.com/in/username)',
+      s4TermsRequired: 'يجب الموافقة على الشروط والأحكام',
+      submitGeneric: 'حدث خطأ أثناء إرسال الطلب، حاول مرة أخرى',
+    },
+    header: {
+      title: 'طلب تسجيل مستشار مرخص',
+      stepOf: 'من 5',
+    },
+    stepSubtitles: {
+      1: 'المعلومات الشخصية',
+      2: 'معلومات الرخصة',
+      3: 'التخصص والخبرة',
+      4: 'التوفر والملف المهني',
+    },
+    selectAll: 'تحديد الكل',
+    other: 'أخرى',
+    otherPill: 'أخرى +',
+    step1: {
+      nameLabel: 'الاسم الكامل',
+      namePlaceholder: 'أدخل اسمك الكامل باللغة العربية',
+      mobileLabel: 'رقم جوالك',
+      mobilePlaceholder: 'أدخل رقم جوالك',
+      emailLabel: 'البريد الإلكتروني',
+      cityLabel: 'مدينة الإقامة',
+      cityPlaceholder: 'أدخل مدينة',
+      cityNameLabel: 'اسم المدينة',
+      cityNamePlaceholder: 'أدخل اسم مدينتك',
+      cities: [
+        'الرياض', 'جدة', 'مكة المكرمة', 'المدينة المنورة', 'الدمام',
+        'الخبر', 'الطائف', 'تبوك', 'بريدة', 'الأحساء', 'حائل',
+        'أبها', 'نجران', 'جازان', 'عرعر', 'أخرى',
+      ],
+    },
+    step2: {
+      licenseLabel: 'رقم رخصة فال',
+      licensePlaceholder: 'أدخل رقم رخصة فال',
+      expiryLabel: 'تاريخ انتهاء الرخصة',
+      expiryPlaceholder: 'jj/mm/aaaa',
+      fileLabel: 'تحميل صورة الرخصة',
+      fileChosen: (name: string) => name,
+      fileChangeHint: 'انقر للتغيير',
+      fileChoose: 'اختر ملف من جهازك',
+      fileHint: (mb: number) => `صورة (JPG, PNG) أو PDF – الحجم الأقصى: ${mb} MB`,
+    },
+    step3: {
+      propTypeTitle: 'نوع العقار',
+      propOtherLabel: 'نوع العقار الآخر',
+      propOtherPlaceholder: 'حدد نوع العقار',
+      regionsTitle: 'مناطق التغطية',
+      yearsLabel: 'سنوات الخبرة في مجال الاستشارات العقارية',
+      yearsPlaceholder: 'اختر سنوات الخبرة',
+      years: ['أقل من سنة', '1-2 سنة', '3-5 سنوات', '6-10 سنوات', 'أكثر من 10 سنوات'],
+      hasReportsLabel: 'هل سبق لك كتابة تقارير عقارية؟',
+      yes: 'نعم',
+      no: 'لا',
+      propTypes: [
+        'أراضي لوجستية أو صناعية',
+        'أراضي زراعية',
+        'أراضي تجارية',
+        'أراضي سكنية',
+        'وحدات لوجستية أو صناعية',
+        'وحدات سكنية',
+        'وحدات تجارية',
+        'أخرى',
+      ],
+      regions: [
+        'حائل', 'منطقة الرياض', 'مكة المكرمة', 'المدينة المنورة', 'الشرقية',
+        'القصيم', 'عسير', 'تبوك', 'الحدود الشمالية', 'جازان', 'نجران', 'أخرى',
+      ],
+    },
+    step4: {
+      daysTitle: 'الأيام المتاحة للمساندة في إنتاج التقارير الاستشارية',
+      monthsTitle: 'الأشهر المتاحة لعمل التقارير الاستشارية',
+      bioLabel: 'نبذة مهنية مختصرة (اختياري)',
+      bioPlaceholder: 'اكتب نبذة عن خبرتك المهنية هنا...',
+      linkedinLabel: 'رابط ملف LinkedIn (اختياري)',
+      linkedinPlaceholder: 'https://linkedin.com/in/...',
+      termsAr: 'أعلم بأنه في حال قبول تسجيلي سيتم تزويدي بالعقد لمراجعته وتوقيعه، ولن يبدأ أي عمل أو تكليف قبل إتمام توقيع العقد.',
+      termsEn: 'I acknowledge and understand that, if my registration is accepted, a contract will be sent to me for review and signing prior to any work engagement.',
+      days: ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'],
+      months: [
+        'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+        'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
+      ],
+    },
+    nav: {
+      back: 'السابق',
+      next: 'التالي',
+      submit: 'إرسال الطلب',
+      submitting: 'جارٍ الإرسال...',
+    },
+    success: {
+      title: 'تهانينا!',
+      subtitle: 'تم استلام طلب تسجيلك بنجاح',
+      description: 'جار حالياً مراجعة بياناتك من قبل فريقنا المختص',
+      statusLabel: 'حالة الطلب : قيد الانتظار',
+      statusDescription: 'سيتم إشعارك عبر البريد الإلكتروني أو الرسائل النصية بمجرد الانتهاء من المراجعة.',
+      infoClock: ['سنراجع بياناتك خلال', '14 يوم عمل'],
+      infoBell: ['سنتواصل معك', 'لإعلامك بنتيجة الطلب'],
+      infoBadge: ['بعد الموافقة ستمكن', 'من استخدام المنصة'],
+    },
+  },
+  en: {
+    common: {
+      required: '*',
+      langToggleLabel: 'العربية',
+    },
+    errors: {
+      s1NameRequired: 'Full name is required',
+      s1NameArabicOnly: 'Name must contain Arabic letters and spaces only',
+      s1NameTriple: 'Please enter your full triple name (at least three words)',
+      s1MobileRequired: 'Mobile number is required',
+      s1MobileInvalid: 'Invalid mobile number. Example: 05XXXXXXXX or 5XXXXXXXX',
+      s1EmailRequired: 'Email address is required',
+      s1EmailInvalid: 'Invalid email format',
+      s1CityRequired: 'City of residence is required',
+      s1CityOtherRequired: 'Please enter the city name',
+      s1CityOtherArabicOnly: 'City name must contain letters only',
+      s1CityOtherTooShort: 'City name is too short',
+      s2LicenseRequired: 'FAL license number is required',
+      s2LicenseInvalid: 'License number must be 10 digits',
+      s2ExpiryRequired: 'License expiry date is required',
+      s2ExpiryFormat: 'Invalid format (day/month/year)',
+      s2ExpiryInvalidDate: 'Invalid date',
+      s2ExpiryMustBeFuture: 'Expiry date must be in the future',
+      s2FileRequired: 'License image is required',
+      s2FileFormat: 'Unsupported file format (JPG, PNG or PDF only)',
+      s2FileTooBig: (mb: number) => `File size must not exceed ${mb} MB`,
+      s3PropsRequired: 'Choose at least one property type',
+      s3PropOtherRequired: 'Please specify the other property type',
+      s3PropOtherArabicOnly: 'Must contain letters only',
+      s3PropOtherTooShort: 'Value is too short',
+      s3RegionsRequired: 'Choose at least one coverage region',
+      s3YearsRequired: 'Years of experience is required',
+      s3HasReportsRequired: 'This field is required',
+      s4DaysRequired: 'Choose at least one day',
+      s4MonthsRequired: 'Choose at least one month',
+      s4BioTooLong: 'Bio must not exceed 500 characters',
+      s4LinkedinInvalid: 'Invalid LinkedIn URL (example: https://linkedin.com/in/username)',
+      s4TermsRequired: 'You must agree to the terms and conditions',
+      submitGeneric: 'An error occurred while submitting the request, please try again',
+    },
+    header: {
+      title: 'Licensed Consultant Registration Request',
+      stepOf: 'of 5',
+    },
+    stepSubtitles: {
+      1: 'Personal Information',
+      2: 'License Information',
+      3: 'Specialization & Experience',
+      4: 'Availability & Professional Profile',
+    },
+    selectAll: 'Select all',
+    other: 'Other',
+    otherPill: 'Other +',
+    step1: {
+      nameLabel: 'Full Name',
+      namePlaceholder: 'Enter your full name in Arabic',
+      mobileLabel: 'Mobile Number',
+      mobilePlaceholder: 'Enter your mobile number',
+      emailLabel: 'Email Address',
+      cityLabel: 'City of Residence',
+      cityPlaceholder: 'Select a city',
+      cityNameLabel: 'City Name',
+      cityNamePlaceholder: 'Enter your city name',
+      cities: [
+        'الرياض', 'جدة', 'مكة المكرمة', 'المدينة المنورة', 'الدمام',
+        'الخبر', 'الطائف', 'تبوك', 'بريدة', 'الأحساء', 'حائل',
+        'أبها', 'نجران', 'جازان', 'عرعر', 'أخرى',
+      ],
+    },
+    step2: {
+      licenseLabel: 'FAL License Number',
+      licensePlaceholder: 'Enter your FAL license number',
+      expiryLabel: 'License Expiry Date',
+      expiryPlaceholder: 'dd/mm/yyyy',
+      fileLabel: 'Upload License Image',
+      fileChosen: (name: string) => name,
+      fileChangeHint: 'Click to change',
+      fileChoose: 'Choose a file from your device',
+      fileHint: (mb: number) => `Image (JPG, PNG) or PDF – Max size: ${mb} MB`,
+    },
+    step3: {
+      propTypeTitle: 'Property Type',
+      propOtherLabel: 'Other Property Type',
+      propOtherPlaceholder: 'Specify the property type',
+      regionsTitle: 'Coverage Regions',
+      yearsLabel: 'Years of Experience in Real Estate Consulting',
+      yearsPlaceholder: 'Select years of experience',
+      years: ['Less than 1 year', '1-2 years', '3-5 years', '6-10 years', 'More than 10 years'],
+      hasReportsLabel: 'Have you previously written real estate reports?',
+      yes: 'Yes',
+      no: 'No',
+      propTypes: [
+        'Logistics or Industrial Land',
+        'Agricultural Land',
+        'Commercial Land',
+        'Residential Land',
+        'Logistics or Industrial Units',
+        'Residential Units',
+        'Commercial Units',
+        'Other',
+      ],
+      regions: [
+        'Hail', 'Riyadh Region', 'Makkah', 'Madinah', 'Eastern Province',
+        'Qassim', 'Asir', 'Tabuk', 'Northern Borders', 'Jazan', 'Najran', 'Other',
+      ],
+    },
+    step4: {
+      daysTitle: 'Days Available to Assist in Producing Consulting Reports',
+      monthsTitle: 'Months Available for Consulting Report Work',
+      bioLabel: 'Short Professional Bio (optional)',
+      bioPlaceholder: 'Write a brief bio about your professional experience...',
+      linkedinLabel: 'LinkedIn Profile URL (optional)',
+      linkedinPlaceholder: 'https://linkedin.com/in/...',
+      termsAr: 'أعلم بأنه في حال قبول تسجيلي سيتم تزويدي بالعقد لمراجعته وتوقيعه، ولن يبدأ أي عمل أو تكليف قبل إتمام توقيع العقد.',
+      termsEn: 'I acknowledge and understand that, if my registration is accepted, a contract will be sent to me for review and signing prior to any work engagement.',
+      days: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+      months: [
+        'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December',
+      ],
+    },
+    nav: {
+      back: 'Back',
+      next: 'Next',
+      submit: 'Submit Request',
+      submitting: 'Submitting...',
+    },
+    success: {
+      title: 'Congratulations!',
+      subtitle: 'Your registration request has been received successfully',
+      description: 'Our specialized team is currently reviewing your information',
+      statusLabel: 'Request Status: Pending',
+      statusDescription: 'You will be notified via email or SMS as soon as the review is complete.',
+      infoClock: ['We will review your information within', '14 business days'],
+      infoBell: ['We will contact you', 'to inform you of the request result'],
+      infoBadge: ['Once approved, you will be able', 'to start using the platform'],
+    },
+  },
+} as const;
+
+/* Build a zod schema for Step 1 (personal info) with error messages in the given language. */
+const buildStep1Schema = (lang: Lang) => {
+  const t = STRINGS[lang].errors;
+  return z
+    .object({
+      s1Name:
+        lang === 'ar'
+          ? z
+              .string()
+              .min(1, t.s1NameRequired)
+              .refine(v => ARABIC_TEXT_RE.test(v.trim()), t.s1NameArabicOnly)
+              .refine(v => v.trim().split(/\s+/).length >= 3, t.s1NameTriple)
+          : z
+              .string()
+              .min(1, t.s1NameRequired)
+              .refine(v => v.trim().split(/\s+/).length >= 3, t.s1NameTriple),
+      s1Mobile: z
+        .string()
+        .min(1, t.s1MobileRequired)
+        .refine(v => normalizeSaMobile(v) !== null, t.s1MobileInvalid),
+      s1Email: z
+        .string()
+        .min(1, t.s1EmailRequired)
+        .refine(v => EMAIL_RE.test(v.trim()), t.s1EmailInvalid),
+      s1City: z.string().min(1, t.s1CityRequired),
+      s1CityOther: z.string().optional().default(''),
+    })
+    .superRefine((d, ctx) => {
+      if (d.s1City === CITY_OTHER) {
+        const v = (d.s1CityOther ?? '').trim();
+        const validText = lang === 'ar' ? ARABIC_TEXT_RE.test(v) : ARABIC_TEXT_RE.test(v) || ENGLISH_TEXT_RE.test(v);
+        if (!v) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: t.s1CityOtherRequired });
+        else if (!validText) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: t.s1CityOtherArabicOnly });
+        else if (v.length < 2) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: t.s1CityOtherTooShort });
+      }
+    });
+};
+type Step1Values = z.input<ReturnType<typeof buildStep1Schema>>;
+
+/* Build a zod schema for Step 2 (license info) with error messages in the given language. */
+const buildStep2Schema = (lang: Lang) => {
+  const t = STRINGS[lang].errors;
+  return z.object({
+    s2License: z
       .string()
-      .min(1, 'الاسم الكامل مطلوب')
-      .refine(v => ARABIC_TEXT_RE.test(v.trim()), 'الاسم يجب أن يحتوي على حروف عربية ومسافات فقط')
-      .refine(v => v.trim().split(/\s+/).length >= 3, 'يرجى إدخال الاسم الثلاثي (ثلاث كلمات على الأقل)'),
-    s1Mobile: z
-      .string()
-      .min(1, 'رقم الجوال مطلوب')
-      .refine(v => normalizeSaMobile(v) !== null, 'رقم الجوال غير صحيح. مثال: 05XXXXXXXX أو 5XXXXXXXX'),
-    s1Email: z
-      .string()
-      .min(1, 'البريد الإلكتروني مطلوب')
-      .refine(v => EMAIL_RE.test(v.trim()), 'صيغة البريد الإلكتروني غير صحيحة'),
-    s1City: z.string().min(1, 'مدينة الإقامة مطلوبة'),
-    s1CityOther: z.string().optional().default(''),
-  })
-  .superRefine((d, ctx) => {
-    if (d.s1City === CITY_OTHER) {
-      const v = (d.s1CityOther ?? '').trim();
-      if (!v) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: 'يرجى إدخال اسم المدينة' });
-      else if (!ARABIC_TEXT_RE.test(v)) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: 'اسم المدينة يجب أن يحتوي على حروف عربية فقط' });
-      else if (v.length < 2) ctx.addIssue({ path: ['s1CityOther'], code: 'custom', message: 'اسم المدينة قصير جداً' });
-    }
+      .min(1, t.s2LicenseRequired)
+      .refine(v => /^\d{10}$/.test(v.trim()), t.s2LicenseInvalid),
+    s2Expiry: z.string().superRefine((val, ctx) => {
+      const v = (val ?? '').trim();
+      if (!v) { ctx.addIssue({ code: 'custom', message: t.s2ExpiryRequired }); return; }
+      const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v);
+      if (!m) { ctx.addIssue({ code: 'custom', message: t.s2ExpiryFormat }); return; }
+      const day = +m[1], month = +m[2], year = +m[3];
+      const d = new Date(year, month - 1, day);
+      if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) {
+        ctx.addIssue({ code: 'custom', message: t.s2ExpiryInvalidDate }); return;
+      }
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (d <= today) ctx.addIssue({ code: 'custom', message: t.s2ExpiryMustBeFuture });
+    }),
+    s2File: z.custom<File | null>().superRefine((f, ctx) => {
+      if (!f) { ctx.addIssue({ code: 'custom', message: t.s2FileRequired }); return; }
+      if (!/\.(jpg|jpeg|png|pdf)$/i.test(f.name)) ctx.addIssue({ code: 'custom', message: t.s2FileFormat });
+      if (f.size > MAX_FILE_BYTES) ctx.addIssue({ code: 'custom', message: t.s2FileTooBig(MAX_FILE_MB) });
+    }),
   });
-type Step1Values = z.input<typeof step1Schema>;
+};
+type Step2Values = z.infer<ReturnType<typeof buildStep2Schema>>;
 
-/* react-hook-form schema — Step 2 (license info). */
-const step2Schema = z.object({
-  s2License: z
-    .string()
-    .min(1, 'رقم رخصة فال مطلوب')
-    .refine(v => /^\d{10}$/.test(v.trim()), 'رقم الرخصة يجب أن يتكون من 10 أرقام'),
-  s2Expiry: z.string().superRefine((val, ctx) => {
-    const v = (val ?? '').trim();
-    if (!v) { ctx.addIssue({ code: 'custom', message: 'تاريخ انتهاء الرخصة مطلوب' }); return; }
-    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v);
-    if (!m) { ctx.addIssue({ code: 'custom', message: 'الصيغة غير صحيحة (يوم/شهر/سنة)' }); return; }
-    const day = +m[1], month = +m[2], year = +m[3];
-    const d = new Date(year, month - 1, day);
-    if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) {
-      ctx.addIssue({ code: 'custom', message: 'تاريخ غير صحيح' }); return;
-    }
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    if (d <= today) ctx.addIssue({ code: 'custom', message: 'يجب أن يكون تاريخ الانتهاء في المستقبل' });
-  }),
-  s2File: z.custom<File | null>().superRefine((f, ctx) => {
-    if (!f) { ctx.addIssue({ code: 'custom', message: 'صورة الرخصة مطلوبة' }); return; }
-    if (!/\.(jpg|jpeg|png|pdf)$/i.test(f.name)) ctx.addIssue({ code: 'custom', message: 'صيغة الملف غير مدعومة (JPG, PNG أو PDF فقط)' });
-    if (f.size > MAX_FILE_BYTES) ctx.addIssue({ code: 'custom', message: `حجم الملف يجب ألا يتجاوز ${MAX_FILE_MB} ميجابايت` });
-  }),
-});
-type Step2Values = z.infer<typeof step2Schema>;
+/* Build a zod schema for Step 3 (specialization & experience) with error messages in the given language. */
+const buildStep3Schema = (lang: Lang) => {
+  const t = STRINGS[lang].errors;
+  return z
+    .object({
+      s3Props: z.array(z.string()).min(1, t.s3PropsRequired),
+      s3PropOther: z.string().optional().default(''),
+      s3Regions: z.array(z.string()).min(1, t.s3RegionsRequired),
+      s3Years: z.string().min(1, t.s3YearsRequired),
+      s3HasReports: z.boolean().nullable().refine(v => v !== null, t.s3HasReportsRequired),
+    })
+    .superRefine((d, ctx) => {
+      if (d.s3Props.includes(PROP_OTHER)) {
+        const v = (d.s3PropOther ?? '').trim();
+        const validText = lang === 'ar' ? ARABIC_TEXT_RE.test(v) : ARABIC_TEXT_RE.test(v) || ENGLISH_TEXT_RE.test(v);
+        if (!v) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: t.s3PropOtherRequired });
+        else if (!validText) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: t.s3PropOtherArabicOnly });
+        else if (v.length < 2) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: t.s3PropOtherTooShort });
+      }
+    });
+};
+type Step3Values = z.input<ReturnType<typeof buildStep3Schema>>;
 
-/* react-hook-form schema — Step 3 (specialization & experience). */
-const step3Schema = z
-  .object({
-    s3Props: z.array(z.string()).min(1, 'اختر نوع عقار واحد على الأقل'),
-    s3PropOther: z.string().optional().default(''),
-    s3Regions: z.array(z.string()).min(1, 'اختر منطقة تغطية واحدة على الأقل'),
-    s3Years: z.string().min(1, 'سنوات الخبرة مطلوبة'),
-    s3HasReports: z.boolean().nullable().refine(v => v !== null, 'هذا الحقل مطلوب'),
-  })
-  .superRefine((d, ctx) => {
-    if (d.s3Props.includes(PROP_OTHER)) {
-      const v = (d.s3PropOther ?? '').trim();
-      if (!v) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: 'يرجى تحديد نوع العقار الآخر' });
-      else if (!ARABIC_TEXT_RE.test(v)) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: 'يجب أن يحتوي على حروف عربية فقط' });
-      else if (v.length < 2) ctx.addIssue({ path: ['s3PropOther'], code: 'custom', message: 'القيمة قصيرة جداً' });
-    }
+/* Build a zod schema for Step 4 (availability & professional profile) with error messages in the given language. */
+const buildStep4Schema = (lang: Lang) => {
+  const t = STRINGS[lang].errors;
+  return z.object({
+    s4Days: z.array(z.string()).min(1, t.s4DaysRequired),
+    s4Months: z.array(z.string()).min(1, t.s4MonthsRequired),
+    s4Bio: z.string().max(500, t.s4BioTooLong).optional().default(''),
+    s4Linkedin: z
+      .string()
+      .optional()
+      .default('')
+      .refine(v => !v || !v.trim() || LINKEDIN_RE.test(v.trim()), t.s4LinkedinInvalid),
+    s4Terms: z.boolean().refine(v => v === true, t.s4TermsRequired),
   });
-type Step3Values = z.input<typeof step3Schema>;
-
-/* react-hook-form schema — Step 4 (availability & professional profile). */
-const step4Schema = z.object({
-  s4Days: z.array(z.string()).min(1, 'اختر يوماً واحداً على الأقل'),
-  s4Months: z.array(z.string()).min(1, 'اختر شهراً واحداً على الأقل'),
-  s4Bio: z.string().max(500, 'النبذة يجب ألا تتجاوز 500 حرف').optional().default(''),
-  s4Linkedin: z
-    .string()
-    .optional()
-    .default('')
-    .refine(v => !v || !v.trim() || LINKEDIN_RE.test(v.trim()), 'رابط LinkedIn غير صحيح (مثال: https://linkedin.com/in/username)'),
-  s4Terms: z.boolean().refine(v => v === true, 'يجب الموافقة على الشروط والأحكام'),
-});
-type Step4Values = z.input<typeof step4Schema>;
+};
+type Step4Values = z.input<ReturnType<typeof buildStep4Schema>>;
 
 /* ─────────────────────────────────────────────────────────────
    CONSULTANT MULTI-STEP REGISTRATION (standalone)
@@ -136,6 +443,34 @@ export default function App() {
   const isMobile = useIsMobile();
   const [step, setStep] = useState(1);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /* ── Language state — persisted to localStorage, defaults to Arabic ── */
+  const [lang, setLang] = useState<Lang>(() => {
+    try {
+      const stored = window.localStorage.getItem(LANG_STORAGE_KEY);
+      return stored === 'en' ? 'en' : 'ar';
+    } catch {
+      return 'ar';
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LANG_STORAGE_KEY, lang);
+    } catch {
+      /* localStorage unavailable — ignore, language just won't persist */
+    }
+  }, [lang]);
+  const toggleLang = () => setLang(l => (l === 'ar' ? 'en' : 'ar'));
+  const T = STRINGS[lang];
+  const dir = lang === 'ar' ? 'rtl' : 'ltr';
+  const textAlign: React.CSSProperties['textAlign'] = lang === 'ar' ? 'right' : 'left';
+
+  /* Zod schemas rebuilt (memoized) whenever the language changes, so validation
+     error messages always reflect the current UI language. */
+  const step1Schema = useMemo(() => buildStep1Schema(lang), [lang]);
+  const step2Schema = useMemo(() => buildStep2Schema(lang), [lang]);
+  const step3Schema = useMemo(() => buildStep3Schema(lang), [lang]);
+  const step4Schema = useMemo(() => buildStep4Schema(lang), [lang]);
 
   /* Step 1 — react-hook-form */
   const step1Form = useForm<Step1Values>({
@@ -153,31 +488,12 @@ export default function App() {
   });
   const s2File = step2Form.watch('s2File'); // pour l'aperçu du fichier choisi
 
-  /* Step 3 */
-  const PROP_TYPES = [
-    'أراضي لوجستية أو صناعية',
-    'أراضي زراعية',
-    'أراضي تجارية',
-    'أراضي سكنية',
-    'وحدات لوجستية أو صناعية',
-    'وحدات سكنية',
-    'وحدات تجارية',
-    'أخرى',
-  ];
-  const REGIONS = [
-    'حائل',
-    'منطقة الرياض',
-    'مكة المكرمة',
-    'المدينة المنورة',
-    'الشرقية',
-    'القصيم',
-    'عسير',
-    'تبوك',
-    'الحدود الشمالية',
-    'جازان',
-    'نجران',
-    'أخرى',
-  ];
+  /* Step 3 — underlying VALUES stay in Arabic (submitted to the API / used for
+     "Other" comparisons); display labels are looked up per-language below. */
+  const PROP_TYPES: string[] = [...STRINGS.ar.step3.propTypes];
+  const REGIONS: string[] = [...STRINGS.ar.step3.regions];
+  const propTypeLabel = (value: string, i: number) => T.step3.propTypes[i] ?? value;
+  const regionLabel = (value: string, i: number) => T.step3.regions[i] ?? value;
   const step3Form = useForm<Step3Values>({
     resolver: zodResolver(step3Schema),
     mode: 'onTouched',
@@ -194,12 +510,12 @@ export default function App() {
   const s3HasReports = step3Form.watch('s3HasReports');
   const setS3HasReports = (v: boolean) => step3Form.setValue('s3HasReports', v, { shouldValidate: true, shouldTouch: true });
 
-  /* Step 4 */
-  const DAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-  const MONTHS = [
-    'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-    'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
-  ];
+  /* Step 4 — underlying VALUES stay in Arabic (submitted to the API); display
+     labels are looked up per-language below. */
+  const DAYS: string[] = [...STRINGS.ar.step4.days];
+  const MONTHS: string[] = [...STRINGS.ar.step4.months];
+  const dayLabel = (value: string, i: number) => T.step4.days[i] ?? value;
+  const monthLabel = (value: string, i: number) => T.step4.months[i] ?? value;
   const step4Form = useForm<Step4Values>({
     resolver: zodResolver(step4Schema),
     mode: 'onTouched',
@@ -263,9 +579,9 @@ export default function App() {
       setStep(5);
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
-        setSubmitError(err.response?.data?.message ?? 'حدث خطأ أثناء إرسال الطلب، حاول مرة أخرى');
+        setSubmitError(err.response?.data?.message ?? T.errors.submitGeneric);
       } else {
-        setSubmitError('حدث خطأ أثناء إرسال الطلب، حاول مرة أخرى');
+        setSubmitError(T.errors.submitGeneric);
       }
     } finally {
       setIsSubmitting(false);
@@ -291,12 +607,12 @@ export default function App() {
     padding: '0 16px', fontSize: '14px', color: '#111',
     background: '#FFFFFF', outline: 'none',
     fontFamily: 'Alexandria, sans-serif',
-    textAlign: 'right', boxSizing: 'border-box',
+    textAlign, boxSizing: 'border-box',
   };
 
   const lbl: React.CSSProperties = {
     display: 'block', fontSize: '13px', fontWeight: 500,
-    color: '#374151', marginBottom: '8px', textAlign: 'right',
+    color: '#374151', marginBottom: '8px', textAlign,
   };
 
   /* Pill button */
@@ -314,16 +630,16 @@ export default function App() {
     </button>
   );
 
-  /* Section header with "تحديد الكل" */
+  /* Section header with "Select all" */
   const SectionHead = ({
     title, items, selected, onToggleAll,
   }: { title: string; items: string[]; selected: string[]; onToggleAll: () => void }) => (
     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-      {/* Label — first in DOM = RIGHT in RTL */}
-      <span style={{ fontSize: '13.5px', fontWeight: 600, color: '#111', textAlign: 'right' }}>
+      {/* Label — first in DOM = RIGHT in RTL / LEFT in LTR */}
+      <span style={{ fontSize: '13.5px', fontWeight: 600, color: '#111', textAlign }}>
         {title} <span style={{ color: '#EF4444' }}>*</span>
       </span>
-      {/* تحديد الكل — second = LEFT */}
+      {/* Select all — second = LEFT in RTL / RIGHT in LTR */}
       <label dir="ltr" style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: '#374151', userSelect: 'none' }}>
         <input
           type="checkbox"
@@ -331,7 +647,7 @@ export default function App() {
           onChange={onToggleAll}
           style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: '#1B4332' }}
         />
-        <span>تحديد الكل</span>
+        <span>{T.selectAll}</span>
       </label>
     </div>
   );
@@ -395,7 +711,7 @@ export default function App() {
   /* Inline error message under a field */
   const ErrorMsg = ({ name }: { name: string }) =>
     isTouched(name) && errors[name] ? (
-      <p style={{ fontSize: '12px', color: '#EF4444', textAlign: 'right', margin: '6px 2px 0' }}>
+      <p style={{ fontSize: '12px', color: '#EF4444', textAlign, margin: '6px 2px 0' }}>
         {errors[name]}
       </p>
     ) : null;
@@ -410,10 +726,12 @@ export default function App() {
   }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '24px' }}>
       {submitError && isLast && (
-        <p style={{ fontSize: '13px', color: '#EF4444', textAlign: 'right', margin: 0 }}>{submitError}</p>
+        <p style={{ fontSize: '13px', color: '#EF4444', textAlign, margin: 0 }}>{submitError}</p>
       )}
-      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: showBack ? 'space-between' : 'end' }}>
-        {/* السابق — first in DOM = RIGHT in RTL — only if showBack */}
+      <div style={{ display: 'flex', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: showBack ? 'space-between' : 'start' }}>
+        {/* Back — first in DOM, but row-reverse flips it to the opposite side from Next in both languages — only if showBack.
+            justifyContent flips to 'start' (not 'end') when there's no Back button, since row-reverse also flips which
+            physical side 'end' points to — 'start' here keeps the lone Next button pinned to the same visual side as before. */}
         {showBack && (
           <button type="button" onClick={() => setStep(s => s - 1)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
@@ -421,15 +739,15 @@ export default function App() {
             fontSize: '14px', fontWeight: 600, color: '#374151',
             fontFamily: 'Alexandria, sans-serif',
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: 'scaleX(-1)' }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'scaleX(-1)' : 'none' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
             </svg>
-            السابق
+            {T.nav.back}
           </button>
         )}
         {/* Spacer when no back */}
         {!showBack && <span />}
-        {/* التالي / إرسال الطلب — second = LEFT in RTL */}
+        {/* Next / Submit — second = LEFT in RTL / RIGHT in LTR */}
         <button
           type="button"
           onClick={async () => {
@@ -452,9 +770,9 @@ export default function App() {
             transition: 'background 0.15s, opacity 0.15s',
           }}
         >
-          {isSubmitting ? 'جارٍ الإرسال...' : isLast ? 'إرسال الطلب' : 'التالي'}
+          {isSubmitting ? T.nav.submitting : isLast ? T.nav.submit : T.nav.next}
           {!isSubmitting && (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'none' : 'scaleX(-1)' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
             </svg>
           )}
@@ -476,7 +794,7 @@ export default function App() {
   /* ── Step 5: Success ── */
   if (step === 5) {
     return (
-      <div dir="rtl" style={{
+      <div dir={dir} style={{
         minHeight: '100vh', background: '#F5F5F5',
         display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
         padding: '32px 20px', fontFamily: 'Alexandria, sans-serif',
@@ -487,7 +805,23 @@ export default function App() {
           boxShadow: '0 4px 32px rgba(0,0,0,0.10)',
           padding: isMobile ? '40px 28px' : '52px 52px',
           textAlign: 'center',
+          position: 'relative',
         }}>
+          {/* Language toggle */}
+          <button
+            type="button"
+            onClick={toggleLang}
+            style={{
+              position: 'absolute', top: '20px', insetInlineEnd: '20px',
+              padding: '6px 14px', borderRadius: '50px',
+              border: '1.5px solid #D1D5DB', background: '#FFFFFF',
+              color: '#374151', fontSize: '12px', fontWeight: 600,
+              cursor: 'pointer', fontFamily: 'Alexandria, sans-serif',
+            }}
+          >
+            {T.common.langToggleLabel}
+          </button>
+
           {/* Clipboard icon */}
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px', position: 'relative' }}>
             {/* Sparkle dots */}
@@ -512,25 +846,25 @@ export default function App() {
             </svg>
           </div>
 
-          <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#111', marginBottom: '8px' }}>تهانينا!</h1>
+          <h1 style={{ fontSize: '26px', fontWeight: 800, color: '#111', marginBottom: '8px' }}>{T.success.title}</h1>
           <p style={{ fontSize: '15px', fontWeight: 700, color: '#1B7A5C', marginBottom: '6px' }}>
-            تم استلام طلب تسجيلك بنجاح
+            {T.success.subtitle}
           </p>
           <p style={{ fontSize: '13px', color: '#9CA3AF', marginBottom: '24px' }}>
-            جار حالياً مراجعة بياناتك من قبل فريقنا المختص
+            {T.success.description}
           </p>
 
           {/* Status box */}
           <div style={{
             border: '1.5px solid #D4A853', background: '#FFFDF5',
             borderRadius: '14px', padding: '18px 20px',
-            marginBottom: '28px', textAlign: 'right',
+            marginBottom: '28px', textAlign,
           }}>
             <p style={{ fontSize: '14px', fontWeight: 700, color: '#D4A853', marginBottom: '8px' }}>
-              حالة الطلب : قيد الانتظار
+              {T.success.statusLabel}
             </p>
             <p style={{ fontSize: '13px', color: '#374151', lineHeight: 1.7, margin: 0 }}>
-              سيتم إشعارك عبر البريد الإلكتروني أو الرسائل النصية بمجرد الانتهاء من المراجعة.
+              {T.success.statusDescription}
             </p>
           </div>
 
@@ -540,33 +874,33 @@ export default function App() {
             borderTop: '1px solid #E5E7EB', borderBottom: '1px solid #E5E7EB',
             padding: '20px 0', marginBottom: '32px',
           }}>
-            {/* Right: clock */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '0 8px', borderLeft: '1px solid #E5E7EB' }}>
+            {/* Clock */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '0 8px', borderInlineEnd: '1px solid #E5E7EB' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#374151" strokeWidth={1.5}>
                 <circle cx="12" cy="12" r="10" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2" />
               </svg>
               <p style={{ fontSize: '12px', color: '#374151', textAlign: 'center', lineHeight: 1.5, margin: 0 }}>
-                سنراجع بياناتك خلال<br />1-3 أيام عمل
+                {T.success.infoClock[0]}<br />{T.success.infoClock[1]}
               </p>
             </div>
-            {/* Middle: bell */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '0 8px', borderLeft: '1px solid #E5E7EB' }}>
+            {/* Bell */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '0 8px', borderInlineEnd: '1px solid #E5E7EB' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#374151" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 17H5a1 1 0 01-.894-1.447l1.447-2.894A2 2 0 006 11V8a6 6 0 1112 0v3a2 2 0 00.447 1.659l1.447 2.894A1 1 0 0119 17h-4z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.73 21a2 2 0 01-3.46 0" />
               </svg>
               <p style={{ fontSize: '12px', color: '#374151', textAlign: 'center', lineHeight: 1.5, margin: 0 }}>
-                سنتواصل معك<br />لإعلامك بنتيجة الطلب
+                {T.success.infoBell[0]}<br />{T.success.infoBell[1]}
               </p>
             </div>
-            {/* Left: badge */}
+            {/* Badge */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '0 8px' }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#374151" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
               </svg>
               <p style={{ fontSize: '12px', color: '#374151', textAlign: 'center', lineHeight: 1.5, margin: 0 }}>
-                بعد الموافقة ستمكن<br />من استخدام المنصة
+                {T.success.infoBadge[0]}<br />{T.success.infoBadge[1]}
               </p>
             </div>
           </div>
@@ -594,16 +928,11 @@ export default function App() {
   }
 
   /* ── Steps 1-4: Two-column layout ── */
-  const stepSubtitles: Record<number, string> = {
-    1: 'المعلومات الشخصية',
-    2: 'معلومات الرخصة',
-    3: 'التخصص والخبرة',
-    4: 'التوفر والملف المهني',
-  };
+  const stepSubtitles: Record<number, string> = T.stepSubtitles;
 
   return (
     <div
-      dir="rtl"
+      dir={dir}
       style={{
         minHeight: '100vh', background: '#ECECEC',
         display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
@@ -619,26 +948,42 @@ export default function App() {
         minHeight: isMobile ? 'auto' : '620px', margin: 'auto',
       }}>
 
-        {/* ── RIGHT: Form panel (first in DOM = right in RTL) ── */}
+        {/* ── Form panel (first in DOM = right in RTL / left in LTR) ── */}
         <div style={{
           flex: 1, minWidth: 0, padding: isMobile ? '36px 22px' : '44px 52px',
           display: 'flex', flexDirection: 'column',
           overflowY: 'auto',
         }}>
 
+          {/* Language toggle */}
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '12px' }}>
+            <button
+              type="button"
+              onClick={toggleLang}
+              style={{
+                padding: '6px 14px', borderRadius: '50px',
+                border: '1.5px solid #D1D5DB', background: '#FFFFFF',
+                color: '#374151', fontSize: '12px', fontWeight: 600,
+                cursor: 'pointer', fontFamily: 'Alexandria, sans-serif',
+              }}
+            >
+              {T.common.langToggleLabel}
+            </button>
+          </div>
+
           {/* Header: title (right) + progress circle (left) */}
           <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '28px' }}>
-            {/* Title + subtitle — first = RIGHT */}
+            {/* Title + subtitle — first = RIGHT in RTL / LEFT in LTR */}
             <div>
-              <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, color: '#111', textAlign: 'right', margin: '0 0 5px' }}>
-                طلب تسجيل مستشار مرخص
+              <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, color: '#111', textAlign, margin: '0 0 5px' }}>
+                {T.header.title}
               </h1>
               <p style={{ fontSize: '14px', fontWeight: 600, color: '#1B7A5C', margin: 0 }}>
                 {stepSubtitles[step]}
               </p>
             </div>
 
-            {/* Circular progress — second = LEFT */}
+            {/* Circular progress — second = LEFT in RTL / RIGHT in LTR */}
             <div style={{ position: 'relative', width: '56px', height: '56px', flexShrink: 0 }}>
               <svg width="56" height="56" viewBox="0 0 56 56">
                 <circle cx="28" cy="28" r={r} fill="none" stroke="#E5E7EB" strokeWidth="4" />
@@ -652,7 +997,7 @@ export default function App() {
               </svg>
               <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px' }}>
                 <span style={{ fontSize: '15px', fontWeight: 800, color: '#111', lineHeight: 1 }}>{step}</span>
-                <span style={{ fontSize: '9px', color: '#6B7280', lineHeight: 1.2 }}>من 5</span>
+                <span style={{ fontSize: '9px', color: '#6B7280', lineHeight: 1.2 }}>{T.header.stepOf}</span>
               </div>
             </div>
           </div>
@@ -661,36 +1006,36 @@ export default function App() {
           {step === 1 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               {/* 2-column: الاسم الكامل + رقم جوالك */}
-              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: 'rtl' }}>
-                {/* الاسم الكامل — first = RIGHT */}
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: dir }}>
+                {/* Full name — first = RIGHT in RTL / LEFT in LTR */}
                 <div>
                   <label style={lbl}>
-                    الاسم الكامل <span style={{ color: '#EF4444' }}>*</span>
+                    {T.step1.nameLabel} <span style={{ color: '#EF4444' }}>*</span>
                   </label>
                   <input
                     type="text"
                     {...step1Form.register('s1Name')}
-                    placeholder="أدخل اسمك الكامل باللغة العربية"
+                    placeholder={T.step1.namePlaceholder}
                     style={{ ...inp, ...errStyle('s1Name') }}
                   />
                   <ErrorMsg name="s1Name" />
                 </div>
-                {/* رقم جوالك — second = LEFT */}
+                {/* Mobile — second = LEFT in RTL / RIGHT in LTR */}
                 <div>
                   <label style={lbl}>
-                    رقم جوالك <span style={{ color: '#EF4444' }}>*</span>
+                    {T.step1.mobileLabel} <span style={{ color: '#EF4444' }}>*</span>
                   </label>
                   <div style={{
-                    display: 'flex', flexDirection: 'row', alignItems: 'stretch',
+                    display: 'flex', flexDirection: lang === 'ar' ? 'row' : 'row-reverse', alignItems: 'stretch',
                     border: '1.5px solid #D1D5DB', borderRadius: '13px',
                     overflow: 'hidden', height: '52px',
                     ...errStyle('s1Mobile'),
                   }}>
-                    {/* Input — first = RIGHT */}
+                    {/* Input — first = RIGHT in RTL, RIGHT again in LTR (row-reverse) so the +966/flag sits on the LEFT */}
                     <input
                       type="tel"
                       {...step1Form.register('s1Mobile')}
-                      placeholder="أدخل رقم جوالك"
+                      placeholder={T.step1.mobilePlaceholder}
                       dir="rtl"
                       style={{ flex: 1, border: 'none', outline: 'none', padding: '0 12px', fontSize: '14px', color: '#111', background: 'transparent', fontFamily: 'Alexandria, sans-serif', textAlign: 'right', minWidth: 0 }}
                     />
@@ -729,10 +1074,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* البريد الإلكتروني */}
+              {/* Email */}
               <div>
                 <label style={lbl}>
-                  البريد الإلكتروني <span style={{ color: '#EF4444' }}>*</span>
+                  {T.step1.emailLabel} <span style={{ color: '#EF4444' }}>*</span>
                 </label>
                 <input
                   type="email"
@@ -744,36 +1089,20 @@ export default function App() {
                 <ErrorMsg name="s1Email" />
               </div>
 
-              {/* مدينة الإقامة */}
+              {/* City of residence — underlying option VALUES stay Arabic (submitted to API);
+                  displayed label is translated per-language via cityLabelFor() */}
               <div>
                 <label style={lbl}>
-                  مدينة الإقامة <span style={{ color: '#EF4444' }}>*</span>
+                  {T.step1.cityLabel} <span style={{ color: '#EF4444' }}>*</span>
                 </label>
                 <div style={{ position: 'relative' }}>
                   <select
                     {...step1Form.register('s1City')}
                     style={{ ...inp, appearance: 'none', paddingLeft: '40px', cursor: 'pointer', ...errStyle('s1City') }}
                   >
-                    <option value="">أدخل مدينة</option>
-                    {[
-                      'الرياض',
-                      'جدة',
-                      'مكة المكرمة',
-                      'المدينة المنورة',
-                      'الدمام',
-                      'الخبر',
-                      'الطائف',
-                      'تبوك',
-                      'بريدة',
-                      'الأحساء',
-                      'حائل',
-                      'أبها',
-                      'نجران',
-                      'جازان',
-                      'عرعر',
-                      'أخرى',
-                    ].map(c => (
-                      <option key={c} value={c}>{c}</option>
+                    <option value="">{T.step1.cityPlaceholder}</option>
+                    {STRINGS.ar.step1.cities.map((c, i) => (
+                      <option key={c} value={c}>{T.step1.cities[i] ?? c}</option>
                     ))}
                   </select>
                   <div style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: '12px', color: '#6B7280' }}>▼</div>
@@ -782,12 +1111,12 @@ export default function App() {
                 {s1City === CITY_OTHER && (
                   <div style={{ marginTop: '12px' }}>
                     <label style={lbl}>
-                      اسم المدينة <span style={{ color: '#EF4444' }}>*</span>
+                      {T.step1.cityNameLabel} <span style={{ color: '#EF4444' }}>*</span>
                     </label>
                     <input
                       type="text"
                       {...step1Form.register('s1CityOther')}
-                      placeholder="أدخل اسم مدينتك"
+                      placeholder={T.step1.cityNamePlaceholder}
                       dir="rtl"
                       style={{ ...inp, ...errStyle('s1CityOther') }}
                     />
@@ -803,25 +1132,25 @@ export default function App() {
           {/* ─── STEP 2: معلومات الرخصة ─── */}
           {step === 2 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* 2-column: رقم رخصة فال + تاريخ انتهاء الرخصة */}
-              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: 'rtl' }}>
-                {/* رقم رخصة فال — first = RIGHT */}
+              {/* 2-column: license number + expiry date */}
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: dir }}>
+                {/* License number — first = RIGHT in RTL / LEFT in LTR */}
                 <div>
                   <label style={lbl}>
-                    رقم رخصة فال <span style={{ color: '#EF4444' }}>*</span>
+                    {T.step2.licenseLabel} <span style={{ color: '#EF4444' }}>*</span>
                   </label>
                   <input
                     type="text"
                     {...step2Form.register('s2License')}
-                    placeholder="أدخل رقم رخصة فال"
+                    placeholder={T.step2.licensePlaceholder}
                     style={{ ...inp, ...errStyle('s2License') }}
                   />
                   <ErrorMsg name="s2License" />
                 </div>
-                {/* تاريخ انتهاء الرخصة */}
+                {/* Expiry date */}
                 <div>
                   <label style={lbl}>
-                    تاريخ انتهاء الرخصة <span style={{ color: "#EF4444" }}>*</span>
+                    {T.step2.expiryLabel} <span style={{ color: "#EF4444" }}>*</span>
                   </label>
 
                   <Controller
@@ -859,7 +1188,7 @@ export default function App() {
                               onSelect={() => closeExpiryCalendar()}
                               onCalendarClose={closeExpiryCalendar}
                               dateFormat="dd/MM/yyyy"
-                              placeholderText="jj/mm/aaaa"
+                              placeholderText={T.step2.expiryPlaceholder}
                               className="custom-datepicker-input"
                               wrapperClassName="custom-datepicker-wrapper"
                               showPopperArrow={false}
@@ -919,10 +1248,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* تحميل صورة الرخصة */}
+              {/* Upload license image */}
               <div>
                 <label style={{ ...lbl, marginBottom: '10px' }}>
-                  تحميل صورة الرخصة <span style={{ color: '#EF4444' }}>*</span>
+                  {T.step2.fileLabel} <span style={{ color: '#EF4444' }}>*</span>
                 </label>
                 <input
                   ref={fileInputRef}
@@ -946,16 +1275,16 @@ export default function App() {
                       <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#1B7A5C" strokeWidth={1.8}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
-                      <p style={{ fontSize: '14px', fontWeight: 600, color: '#1B7A5C', margin: 0 }}>{s2File.name}</p>
-                      <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>انقر للتغيير</p>
+                      <p style={{ fontSize: '14px', fontWeight: 600, color: '#1B7A5C', margin: 0 }}>{T.step2.fileChosen(s2File.name)}</p>
+                      <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>{T.step2.fileChangeHint}</p>
                     </>
                   ) : (
                     <>
                       <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#1B7A5C" strokeWidth={1.8}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                       </svg>
-                      <p style={{ fontSize: '14px', fontWeight: 600, color: '#111', margin: 0 }}>اختر ملف من جهازك</p>
-                      <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>{`صورة (JPG, PNG) أو PDF – الحجم الأقصى: ${MAX_FILE_MB} MB`}</p>
+                      <p style={{ fontSize: '14px', fontWeight: 600, color: '#111', margin: 0 }}>{T.step2.fileChoose}</p>
+                      <p style={{ fontSize: '12px', color: '#9CA3AF', margin: 0 }}>{T.step2.fileHint(MAX_FILE_MB)}</p>
                     </>
                   )}
                 </div>
@@ -966,22 +1295,23 @@ export default function App() {
             </div>
           )}
 
-          {/* ─── STEP 3: التخصص والخبرة ─── */}
+          {/* ─── STEP 3: Specialization & experience ─── */}
           {step === 3 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-              {/* نوع العقار */}
+              {/* Property type — underlying VALUES stay Arabic (submitted to API);
+                  displayed pill label is translated per-language via propTypeLabel() */}
               <div>
                 <SectionHead
-                  title="نوع العقار"
+                  title={T.step3.propTypeTitle}
                   items={PROP_TYPES}
                   selected={s3Props}
                   onToggleAll={() => { selectAll(PROP_TYPES, s3Props, setS3Props); markTouched('s3Props'); }}
                 />
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: 'rtl' }}>
-                  {PROP_TYPES.map(p => (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: dir }}>
+                  {PROP_TYPES.map((p, i) => (
                     <Pill
                       key={p}
-                      label={p === PROP_OTHER ? 'أخرى +' : p}
+                      label={p === PROP_OTHER ? T.otherPill : propTypeLabel(p, i)}
                       selected={s3Props.includes(p)}
                       onClick={() => { toggle(s3Props, setS3Props, p); markTouched('s3Props'); }}
                     />
@@ -991,14 +1321,14 @@ export default function App() {
                 {s3Props.includes(PROP_OTHER) && (
                   <div style={{ marginTop: '12px' }}>
                     <label style={lbl}>
-                      نوع العقار الآخر <span style={{ color: '#EF4444' }}>*</span>
+                      {T.step3.propOtherLabel} <span style={{ color: '#EF4444' }}>*</span>
                     </label>
                     <input
                       type="text"
                       value={s3PropOther}
                       onChange={e => setS3PropOther(e.target.value)}
                       onBlur={() => markTouched('s3PropOther')}
-                      placeholder="حدد نوع العقار"
+                      placeholder={T.step3.propOtherPlaceholder}
                       dir="rtl"
                       style={{ ...inp, ...errStyle('s3PropOther') }}
                     />
@@ -1007,19 +1337,20 @@ export default function App() {
                 )}
               </div>
 
-              {/* مناطق التغطية */}
+              {/* Coverage regions — underlying VALUES stay Arabic (submitted to API);
+                  displayed pill label is translated per-language via regionLabel() */}
               <div>
                 <SectionHead
-                  title="مناطق التغطية"
+                  title={T.step3.regionsTitle}
                   items={REGIONS}
                   selected={s3Regions}
                   onToggleAll={() => { selectAll(REGIONS, s3Regions, setS3Regions); markTouched('s3Regions'); }}
                 />
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: 'rtl' }}>
-                  {REGIONS.map(r => (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: dir }}>
+                  {REGIONS.map((r, i) => (
                     <Pill
                       key={r}
-                      label={r === REGION_OTHER ? 'أخرى +' : r}
+                      label={r === REGION_OTHER ? T.otherPill : regionLabel(r, i)}
                       selected={s3Regions.includes(r)}
                       onClick={() => { toggle(s3Regions, setS3Regions, r); markTouched('s3Regions'); }}
                     />
@@ -1028,12 +1359,12 @@ export default function App() {
                 <ErrorMsg name="s3Regions" />
               </div>
 
-              {/* 2-column bottom: سنوات الخبرة + هل سبق */}
-              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: 'rtl' }}>
-                {/* سنوات الخبرة — first = RIGHT */}
+              {/* 2-column bottom: years of experience + has reports */}
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', direction: dir }}>
+                {/* Years of experience — first = RIGHT in RTL / LEFT in LTR */}
                 <div>
                   <label style={lbl}>
-                    سنوات الخبرة في مجال الاستشارات العقارية <span style={{ color: '#EF4444' }}>*</span>
+                    {T.step3.yearsLabel} <span style={{ color: '#EF4444' }}>*</span>
                   </label>
                   <div style={{ position: 'relative' }}>
                     <select
@@ -1042,15 +1373,9 @@ export default function App() {
                       onBlur={() => markTouched('s3Years')}
                       style={{ ...inp, appearance: 'none', paddingLeft: '40px', cursor: 'pointer', ...errStyle('s3Years') }}
                     >
-                      <option value="">اختر سنوات الخبرة</option>
-                      {[
-                        'أقل من سنة',
-                        '1-2 سنة',
-                        '3-5 سنوات',
-                        '6-10 سنوات',
-                        'أكثر من 10 سنوات',
-                      ].map(y => (
-                        <option key={y} value={y}>{y}</option>
+                      <option value="">{T.step3.yearsPlaceholder}</option>
+                      {STRINGS.ar.step3.years.map((y, i) => (
+                        <option key={y} value={y}>{T.step3.years[i] ?? y}</option>
                       ))}
                     </select>
                     <div style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: '12px', color: '#6B7280' }}>▼</div>
@@ -1058,13 +1383,13 @@ export default function App() {
                   <ErrorMsg name="s3Years" />
                 </div>
 
-                {/* هل سبق — second = LEFT */}
+                {/* Has reports — second = LEFT in RTL / RIGHT in LTR */}
                 <div>
                   <label style={{ ...lbl, marginBottom: '12px' }}>
-                    هل سبق لك كتابة تقارير عقارية؟ <span style={{ color: '#EF4444' }}>*</span>
+                    {T.step3.hasReportsLabel} <span style={{ color: '#EF4444' }}>*</span>
                   </label>
-                  <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', direction: 'rtl' }}>
-                    {/* نعم — first = RIGHT */}
+                  <div style={{ display: 'flex', flexDirection: 'row', gap: '10px', direction: dir }}>
+                    {/* Yes — first = RIGHT in RTL / LEFT in LTR */}
                     <button
                       type="button"
                       onClick={() => { setS3HasReports(true); markTouched('s3HasReports'); }}
@@ -1077,9 +1402,9 @@ export default function App() {
                         cursor: 'pointer', fontFamily: 'Alexandria, sans-serif',
                       }}
                     >
-                      نعم
+                      {T.step3.yes}
                     </button>
-                    {/* لا — second = LEFT */}
+                    {/* No — second = LEFT in RTL / RIGHT in LTR */}
                     <button
                       type="button"
                       onClick={() => { setS3HasReports(false); markTouched('s3HasReports'); }}
@@ -1092,7 +1417,7 @@ export default function App() {
                         cursor: 'pointer', fontFamily: 'Alexandria, sans-serif',
                       }}
                     >
-                      لا
+                      {T.step3.no}
                     </button>
                   </div>
                   <ErrorMsg name="s3HasReports" />
@@ -1103,49 +1428,51 @@ export default function App() {
             </div>
           )}
 
-          {/* ─── STEP 4: التوفر والملف المهني ─── */}
+          {/* ─── STEP 4: Availability & professional profile ─── */}
           {step === 4 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-              {/* الأيام المتاحة */}
+              {/* Available days — underlying VALUES stay Arabic (submitted to API);
+                  displayed pill label is translated per-language via dayLabel() */}
               <div>
                 <SectionHead
-                  title="الأيام المتاحة للمساندة في إنتاج التقارير الاستشارية"
+                  title={T.step4.daysTitle}
                   items={DAYS}
                   selected={s4Days}
                   onToggleAll={() => { selectAll(DAYS, s4Days, setS4Days); markTouched('s4Days'); }}
                 />
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: 'rtl' }}>
-                  {DAYS.map(d => (
-                    <Pill key={d} label={d} selected={s4Days.includes(d)} onClick={() => { toggle(s4Days, setS4Days, d); markTouched('s4Days'); }} />
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: dir }}>
+                  {DAYS.map((d, i) => (
+                    <Pill key={d} label={dayLabel(d, i)} selected={s4Days.includes(d)} onClick={() => { toggle(s4Days, setS4Days, d); markTouched('s4Days'); }} />
                   ))}
                 </div>
                 <ErrorMsg name="s4Days" />
               </div>
 
-              {/* الأشهر المتاحة */}
+              {/* Available months — underlying VALUES stay Arabic (submitted to API);
+                  displayed pill label is translated per-language via monthLabel() */}
               <div>
                 <SectionHead
-                  title="الأشهر المتاحة لعمل التقارير الاستشارية"
+                  title={T.step4.monthsTitle}
                   items={MONTHS}
                   selected={s4Months}
                   onToggleAll={() => { selectAll(MONTHS, s4Months, setS4Months); markTouched('s4Months'); }}
                 />
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: 'rtl' }}>
-                  {MONTHS.map(m => (
-                    <Pill key={m} label={m} selected={s4Months.includes(m)} onClick={() => { toggle(s4Months, setS4Months, m); markTouched('s4Months'); }} />
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', direction: dir }}>
+                  {MONTHS.map((m, i) => (
+                    <Pill key={m} label={monthLabel(m, i)} selected={s4Months.includes(m)} onClick={() => { toggle(s4Months, setS4Months, m); markTouched('s4Months'); }} />
                   ))}
                 </div>
                 <ErrorMsg name="s4Months" />
               </div>
 
-              {/* نبذة مهنية مختصرة */}
+              {/* Short professional bio */}
               <div>
-                <label style={lbl}>نبذة مهنية مختصرة (اختياري)</label>
+                <label style={lbl}>{T.step4.bioLabel}</label>
                 <textarea
                   value={s4Bio}
                   onChange={e => setS4Bio(e.target.value)}
                   onBlur={() => markTouched('s4Bio')}
-                  placeholder="اكتب نبذة عن خبرتك المهنية هنا..."
+                  placeholder={T.step4.bioPlaceholder}
                   rows={4}
                   maxLength={500}
                   style={{
@@ -1154,19 +1481,19 @@ export default function App() {
                     borderRadius: '13px',
                     padding: '14px 16px', fontSize: '14px', color: '#111',
                     background: '#FFFFFF', outline: 'none', resize: 'vertical',
-                    fontFamily: 'Alexandria, sans-serif', textAlign: 'right',
+                    fontFamily: 'Alexandria, sans-serif', textAlign,
                     boxSizing: 'border-box', lineHeight: 1.6,
                   }}
                 />
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
                   <ErrorMsg name="s4Bio" />
-                  <span style={{ fontSize: '11px', color: '#9CA3AF', marginRight: 'auto' }}>{(s4Bio ?? '').length}/500</span>
+                  <span style={{ fontSize: '11px', color: '#9CA3AF', marginInlineStart: 'auto' }}>{(s4Bio ?? '').length}/500</span>
                 </div>
               </div>
 
-              {/* رابط ملف LinkedIn */}
+              {/* LinkedIn profile URL */}
               <div>
-                <label style={lbl}>رابط ملف LinkedIn (اختياري)</label>
+                <label style={lbl}>{T.step4.linkedinLabel}</label>
                 <div style={{
                   display: 'flex', flexDirection: 'row', alignItems: 'stretch',
                   border: '1.5px solid #D1D5DB', borderRadius: '13px',
@@ -1179,7 +1506,7 @@ export default function App() {
                     value={s4Linkedin}
                     onChange={e => setS4Linkedin(e.target.value)}
                     onBlur={() => markTouched('s4Linkedin')}
-                    placeholder="https://linkedin.com/in/..."
+                    placeholder={T.step4.linkedinPlaceholder}
                     dir="ltr"
                     style={{ flex: 1, border: 'none', outline: 'none', padding: '0 12px', fontSize: '13px', color: '#111', background: 'transparent', fontFamily: 'monospace', textAlign: 'left', minWidth: 0 }}
                   />
@@ -1197,16 +1524,29 @@ export default function App() {
                 <ErrorMsg name="s4Linkedin" />
               </div>
 
-              {/* الموافقة على الشروط والأحكام */}
+              {/* Terms & conditions acknowledgement — shown in both languages regardless
+                  of UI language (legal text), primary language ordered by current lang */}
               <div>
-                <label dir="rtl" style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#374151', userSelect: 'none' }}>
+                <label dir={dir} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#374151', userSelect: 'none' }}>
                   <input
                     type="checkbox"
                     checked={s4Terms}
                     onChange={e => { setS4Terms(e.target.checked); markTouched('s4Terms'); }}
                     style={{ width: '16px', height: '16px', marginTop: '2px', cursor: 'pointer', accentColor: '#1B4332', flexShrink: 0 }}
                   />
-                  <span>أوافق على <span style={{ color: '#1B4332', fontWeight: 600 }}>الشروط والأحكام</span> وسياسة الخصوصية</span>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {lang === 'ar' ? (
+                      <>
+                        <span>{T.step4.termsAr}</span>
+                        <span dir="ltr" style={{ color: '#6B7280', fontSize: '12px' }}>{T.step4.termsEn}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{T.step4.termsEn}</span>
+                        <span dir="rtl" style={{ color: '#6B7280', fontSize: '12px', textAlign: 'right' }}>{T.step4.termsAr}</span>
+                      </>
+                    )}
+                  </span>
                 </label>
                 <ErrorMsg name="s4Terms" />
               </div>
