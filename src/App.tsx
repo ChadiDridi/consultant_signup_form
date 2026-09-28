@@ -740,10 +740,11 @@ export default function App() {
       {step1CheckError && step === 1 && (
         <p style={{ fontSize: '13px', color: '#EF4444', textAlign, margin: 0 }}>{step1CheckError}</p>
       )}
-      <div style={{ display: 'flex', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: showBack ? 'space-between' : 'start' }}>
-        {/* Back — first in DOM, but row-reverse flips it to the opposite side from Next in both languages — only if showBack.
-            justifyContent flips to 'start' (not 'end') when there's no Back button, since row-reverse also flips which
-            physical side 'end' points to — 'start' here keeps the lone Next button pinned to the same visual side as before. */}
+      <div dir={dir} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: showBack ? 'space-between' : 'end' }}>
+        {/* Back — first in DOM = leading edge, so it sits on the trailing side relative to Next:
+            LEFT in LTR, RIGHT in RTL. The inherited `dir` mirrors the row for us — only if showBack.
+            With no Back button, justifyContent 'end' pins the lone Next button to the forward corner
+            (RIGHT in LTR, LEFT in RTL). */}
         {showBack && (
           <button type="button" onClick={() => setStep(s => s - 1)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
@@ -751,7 +752,8 @@ export default function App() {
             fontSize: '14px', fontWeight: 600, color: '#374151',
             fontFamily: 'Alexandria, sans-serif',
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'scaleX(-1)' : 'none' }}>
+            {/* Back points against the reading direction: LEFT in LTR, RIGHT in RTL */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'none' : 'scaleX(-1)' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
             </svg>
             {T.nav.back}
@@ -759,7 +761,7 @@ export default function App() {
         )}
         {/* Spacer when no back */}
         {!showBack && <span />}
-        {/* Next / Submit — second = LEFT in RTL / RIGHT in LTR */}
+        {/* Next / Submit — second in DOM = forward corner: RIGHT in LTR, LEFT in RTL */}
         <button
           type="button"
           onClick={async () => {
@@ -806,6 +808,7 @@ export default function App() {
         >
           {isSubmitting || isCheckingStep1 ? T.nav.submitting : isLast ? T.nav.submit : T.nav.next}
           {!isSubmitting && !isCheckingStep1 && (
+            /* Next points with the reading direction: RIGHT in LTR, LEFT in RTL */
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'none' : 'scaleX(-1)' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
             </svg>
