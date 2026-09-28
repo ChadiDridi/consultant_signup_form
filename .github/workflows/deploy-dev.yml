@@ -1,0 +1,89 @@
+name: Deploy — dev
+
+on:
+  push:
+    branches: [master]
+
+env:
+  PROJECT_ID: awraq-495818
+  REGION: me-central1
+  REGISTRY: me-central1-docker.pkg.dev
+  REPO: awraq-platform-repo
+  IMAGE: consultant-register-dev
+  VM_ZONE: me-central1-b
+  VM_NAME: awraq-vm
+  CONTAINER_NAME: consultant-register-dev
+  CONTAINER_PORT: 8085
+  # Vite env vars are compiled into the bundle at build time, not read at
+  # container runtime — this must point at the dev API so the deployed
+  # bundle calls dev, not prod (the Dockerfile default).
+  VITE_API_BASE_URL: https://dev-mashurah.awraq.sa/mashurah/api
+
+jobs:
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        run: echo "tag=$(echo $GITHUB_SHA | head -c7)" >> $GITHUB_OUTPUT
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=${{ env.VITE_API_BASE_URL }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to dev VM
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Pull new image & recreate container on the VM
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE }}:${{ needs.build-and-push.outputs.tag }}"
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --tunnel-through-iap \
+            --command="
+              set -euo pipefail
+              sudo gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+              sudo docker pull ${IMAGE_REF}
+              sudo docker rm -f ${{ env.CONTAINER_NAME }} || true
+              sudo docker run -d \
+                --name ${{ env.CONTAINER_NAME }} \
+                --restart unless-stopped \
+                -p ${{ env.CONTAINER_PORT }}:80 \
+                ${IMAGE_REF}
+            "
