@@ -88,6 +88,8 @@ const STRINGS = {
       s4LinkedinInvalid: 'رابط LinkedIn غير صحيح (مثال: https://linkedin.com/in/username)',
       s4TermsRequired: 'يجب الموافقة على الشروط والأحكام',
       submitGeneric: 'حدث خطأ أثناء إرسال الطلب، حاول مرة أخرى',
+      mobileAlreadyRegistered: 'رقم الجوال مسجل بالفعل',
+      emailAlreadyRegistered: 'البريد الإلكتروني مسجل بالفعل',
     },
     header: {
       title: 'طلب تسجيل مستشار مرخص',
@@ -226,6 +228,8 @@ const STRINGS = {
       s4LinkedinInvalid: 'Invalid LinkedIn URL (example: https://linkedin.com/in/username)',
       s4TermsRequired: 'You must agree to the terms and conditions',
       submitGeneric: 'An error occurred while submitting the request, please try again',
+      mobileAlreadyRegistered: 'This mobile number is already registered',
+      emailAlreadyRegistered: 'This email address is already registered',
     },
     header: {
       title: 'Licensed Consultant Registration Request',
@@ -536,6 +540,11 @@ export default function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  /* Step 1 availability pre-check (mobile/email already registered) — surfaced
+     before the user proceeds to the rest of the form, instead of only on final submit. */
+  const [step1CheckError, setStep1CheckError] = useState<string | null>(null);
+  const [isCheckingStep1, setIsCheckingStep1] = useState(false);
+
   /* Which fields the user has interacted with — controls when errors show */
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const markTouched = (name: string) => setTouched(t => (t[name] ? t : { ...t, [name]: true }));
@@ -728,6 +737,9 @@ export default function App() {
       {submitError && isLast && (
         <p style={{ fontSize: '13px', color: '#EF4444', textAlign, margin: 0 }}>{submitError}</p>
       )}
+      {step1CheckError && step === 1 && (
+        <p style={{ fontSize: '13px', color: '#EF4444', textAlign, margin: 0 }}>{step1CheckError}</p>
+      )}
       <div style={{ display: 'flex', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: showBack ? 'space-between' : 'start' }}>
         {/* Back — first in DOM, but row-reverse flips it to the opposite side from Next in both languages — only if showBack.
             justifyContent flips to 'start' (not 'end') when there's no Back button, since row-reverse also flips which
@@ -751,27 +763,49 @@ export default function App() {
         <button
           type="button"
           onClick={async () => {
-            if (isSubmitting) return;
-            if (step === 1) { if (await step1Form.trigger()) setStep(2); return; }
+            if (isSubmitting || isCheckingStep1) return;
+            if (step === 1) {
+              if (!(await step1Form.trigger())) return;
+              setStep1CheckError(null);
+              setIsCheckingStep1(true);
+              try {
+                const s1 = step1Form.getValues();
+                const mobileNorm = normalizeSaMobile(s1.s1Mobile) ?? s1.s1Mobile;
+                const { data } = await api.post('/auth/check-availability/consultant', {
+                  mobile: mobileNorm,
+                  email: s1.s1Email,
+                });
+                if (!data.mobileAvailable) { setStep1CheckError(T.errors.mobileAlreadyRegistered); return; }
+                if (!data.emailAvailable) { setStep1CheckError(T.errors.emailAlreadyRegistered); return; }
+                setStep(2);
+              } catch {
+                // Availability check is a soft pre-warning — if it fails (network/server
+                // issue), don't block progress; the real check still runs at final submit.
+                setStep(2);
+              } finally {
+                setIsCheckingStep1(false);
+              }
+              return;
+            }
             if (step === 2) { if (await step2Form.trigger()) setStep(3); return; }
             if (step === 3) { if (await step3Form.trigger()) setStep(4); return; }
             if (step === 4) { if (await step4Form.trigger()) submitConsultant(); return; }
           }}
-          disabled={isSubmitting}
+          disabled={isSubmitting || isCheckingStep1}
           style={{
             height: '48px', padding: '0 28px',
-            background: isSubmitting ? '#E8C98A' : '#D4A853',
+            background: (isSubmitting || isCheckingStep1) ? '#E8C98A' : '#D4A853',
             border: 'none', borderRadius: '28px',
             fontSize: '15px', fontWeight: 700, color: '#1a1a1a',
-            cursor: isSubmitting ? 'not-allowed' : 'pointer',
+            cursor: (isSubmitting || isCheckingStep1) ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', gap: '8px',
             fontFamily: 'Alexandria, sans-serif', whiteSpace: 'nowrap',
-            opacity: isSubmitting ? 0.65 : 1,
+            opacity: (isSubmitting || isCheckingStep1) ? 0.65 : 1,
             transition: 'background 0.15s, opacity 0.15s',
           }}
         >
-          {isSubmitting ? T.nav.submitting : isLast ? T.nav.submit : T.nav.next}
-          {!isSubmitting && (
+          {isSubmitting || isCheckingStep1 ? T.nav.submitting : isLast ? T.nav.submit : T.nav.next}
+          {!isSubmitting && !isCheckingStep1 && (
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: lang === 'ar' ? 'none' : 'scaleX(-1)' }}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
             </svg>

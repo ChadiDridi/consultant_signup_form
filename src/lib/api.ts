@@ -1,9 +1,10 @@
 import axios from 'axios';
 
-// Deliberate cross-origin call from this standalone app's *.vercel.app domain
-// to the existing production API. No client-side CORS handling here — that is
-// a backend concern and out of scope for this app.
-const API_BASE_URL = 'https://awraq.sa/mashurah/api';
+// Deliberate cross-origin call from this standalone app's own domain to the
+// platform API. No client-side CORS handling here — that is a backend concern
+// and out of scope for this app. Defaults to prod; VITE_API_BASE_URL lets a
+// separately-built dev deployment point at the dev API instead.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://awraq.sa/mashurah/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
